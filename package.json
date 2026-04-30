@@ -1,11 +1,14 @@
 {
-  "name": "whatsapp-pairing-bot",
+  "name": "whatsapp-session-bot",
   "version": "1.0.0",
+  "description": "WhatsApp bot with Express to generate and send session IDs",
+  "main": "bot.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node bot.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.6.0",
-    "@hapi/boom": "^10.0.1"
+    "@whiskeysockets/baileys": "^6.7.7",
+    "@hapi/boom": "^10.0.1",
+    "express": "^4.21.0"
   }
-  }
+}
