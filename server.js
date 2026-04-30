@@ -18,6 +18,43 @@ function generateSessionId() {
     return crypto.randomBytes(8).toString('hex');
 }
 
+// Initialize WhatsApp connection
+async function connectWhatsApp() {
+    try {
+        const { state, saveCreds } = await useMultiFileAuthState('auth_info');
+        
+        sock = makeWASocket({
+            auth: state,
+            printQRInTerminal: false,
+            browser: Browsers.ubuntu('Session Bot')
+        });
+
+        sock.ev.on('connection.update', (update) => {
+            const { connection, lastDisconnect, qr } = update;
+            
+            if (qr) {
+                console.log('QR Code received. Check logs for QR URL.');
+            }
+            
+            if (connection === 'open') {
+                console.log('✅ WhatsApp Connected!');
+                isConnected = true;
+            }
+            
+            if (connection === 'close') {
+                isConnected = false;
+                console.log('❌ Disconnected');
+            }
+        });
+
+        sock.ev.on('creds.update', saveCreds);
+        
+        console.log('WhatsApp connection initialized');
+    } catch (error) {
+        console.error('WhatsApp init error:', error);
+    }
+}
+
 // Homepage
 app.get('/', (req, res) => {
     res.send(`
@@ -41,14 +78,23 @@ app.get('/', (req, res) => {
             .card {
                 background: white;
                 border-radius: 2rem;
-                padding: 2.5rem;
+                padding: 2rem;
                 width: 100%;
                 max-width: 500px;
                 box-shadow: 0 30px 60px rgba(0,0,0,0.2);
             }
             .icon { font-size: 4rem; text-align: center; margin-bottom: 1rem; }
             h1 { font-size: 1.8rem; color: #075e54; text-align: center; margin-bottom: 0.5rem; }
-            .subtitle { color: #667781; text-align: center; font-size: 0.9rem; margin-bottom: 2rem; }
+            .subtitle { color: #667781; text-align: center; font-size: 0.9rem; margin-bottom: 1.5rem; }
+            .status-badge {
+                text-align: center;
+                padding: 0.5rem;
+                border-radius: 2rem;
+                margin-bottom: 1.5rem;
+                font-size: 0.9rem;
+            }
+            .status-badge.online { background: #dcf8c6; color: #075e54; }
+            .status-badge.offline { background: #fee2e2; color: #dc2626; }
             
             .input-group { margin-bottom: 1.5rem; }
             label {
@@ -88,12 +134,14 @@ app.get('/', (req, res) => {
             }
             .btn:hover { background: #20bd5a; }
             .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+            .btn-blue { background: #3b82f6; }
+            .btn-blue:hover { background: #2563eb; }
             
             .result-box {
-                background: #dcf8c6;
+                background: #f0fdf4;
                 border-radius: 1rem;
                 padding: 1.2rem;
-                margin-top: 1.5rem;
+                margin-top: 1rem;
                 display: none;
             }
             .result-box.show { display: block; }
@@ -103,19 +151,16 @@ app.get('/', (req, res) => {
                 color: #075e54;
                 font-weight: bold;
                 word-break: break-all;
+                margin: 0.5rem 0;
             }
-            .status {
-                margin-top: 1rem;
-                padding: 0.8rem;
+            .copy-btn {
+                background: #075e54;
+                color: white;
+                border: none;
+                padding: 0.5rem 1rem;
                 border-radius: 0.5rem;
-            }
-            .status.success {
-                background: #dcf8c6;
-                color: #075e54;
-            }
-            .status.error {
-                background: #fee2e2;
-                color: #dc2626;
+                cursor: pointer;
+                font-size: 0.9rem;
             }
         </style>
     </head>
@@ -123,106 +168,122 @@ app.get('/', (req, res) => {
         <div class="card">
             <div class="icon">🤖</div>
             <h1>WhatsApp Session Bot</h1>
-            <p class="subtitle">Generate & Send Session IDs via WhatsApp</p>
+            <p class="subtitle">Generate Session IDs & Send via WhatsApp</p>
+            
+            <div class="status-badge offline" id="statusBadge">
+                🔴 Bot Offline
+            </div>
             
             <div class="input-group">
-                <label>📱 Your WhatsApp Number</label>
+                <label>📱 WhatsApp Number</label>
                 <input type="text" id="phoneInput" placeholder="254XXXXXXXXX">
             </div>
             
-            <button class="btn" id="generateBtn" onclick="generateSession()">
-                🎫 Generate Session ID
+            <button class="btn" id="generateBtn" onclick="generateAndSend()">
+                🎫 Generate & Send Session ID
             </button>
             
-            <button class="btn" id="sendBtn" onclick="sendSession()" style="background: #128c7e;">
-                📤 Send to WhatsApp
+            <button class="btn btn-blue" id="checkBtn" onclick="checkStatus()">
+                🔄 Check Bot Status
             </button>
             
-            <div id="resultBox"></div>
+            <div class="result-box" id="resultBox"></div>
         </div>
         
         <script>
-            let currentSessionId = null;
+            // Check status on load
+            checkStatus();
             
-            async function generateSession() {
+            async function checkStatus() {
                 try {
-                    const response = await fetch('/generate');
+                    const response = await fetch('/status');
                     const data = await response.json();
                     
-                    if (data.success) {
-                        currentSessionId = data.sessionId;
-                        showResult(
-                            '✅ Session Generated!',
-                            '🆔 ' + data.sessionId,
-                            'success'
-                        );
+                    const badge = document.getElementById('statusBadge');
+                    if (data.connected) {
+                        badge.textContent = '🟢 Bot Online';
+                        badge.className = 'status-badge online';
+                    } else {
+                        badge.textContent = '🔴 Bot Offline';
+                        badge.className = 'status-badge offline';
                     }
                 } catch (err) {
-                    showResult('Error', err.message, 'error');
+                    console.error('Status check failed:', err);
                 }
             }
             
-            async function sendSession() {
+            async function generateAndSend() {
                 const phone = document.getElementById('phoneInput').value.trim();
                 
                 if (!phone) {
-                    alert('Enter your WhatsApp number first');
+                    alert('Please enter a WhatsApp number');
                     return;
                 }
                 
-                if (!currentSessionId) {
-                    await generateSession();
-                }
-                
-                const btn = document.getElementById('sendBtn');
+                const btn = document.getElementById('generateBtn');
                 btn.disabled = true;
-                btn.textContent = '⏳ Sending...';
+                btn.textContent = '⏳ Working...';
                 
                 try {
-                    const response = await fetch('/send', {
+                    // First generate session ID
+                    const genResponse = await fetch('/generate');
+                    const genData = await genResponse.json();
+                    
+                    if (!genData.success) {
+                        showResult('Error', 'Failed to generate session ID', false);
+                        return;
+                    }
+                    
+                    const sessionId = genData.sessionId;
+                    
+                    // Then send it
+                    const sendResponse = await fetch('/send', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ 
-                            phone: phone, 
-                            sessionId: currentSessionId 
-                        })
+                        body: JSON.stringify({ phone, sessionId })
                     });
                     
-                    const data = await response.json();
+                    const sendData = await sendResponse.json();
                     
-                    if (data.success) {
-                        showResult(
-                            '✅ Session Sent!',
-                            '📱 To: ' + phone + '\n🆔 ' + currentSessionId,
-                            'success'
-                        );
+                    if (sendData.success) {
+                        showResult('✅ Success!', sessionId, true);
                         document.getElementById('phoneInput').value = '';
                     } else {
-                        showResult('❌ Failed', data.error, 'error');
+                        showResult('❌ Failed', sendData.error || 'Unknown error', false);
                     }
+                    
                 } catch (err) {
-                    showResult('Error', err.message, 'error');
+                    showResult('Error', err.message, false);
                 } finally {
                     btn.disabled = false;
-                    btn.textContent = '📤 Send to WhatsApp';
+                    btn.textContent = '🎫 Generate & Send Session ID';
                 }
             }
             
-            function showResult(title, message, type) {
-                const html = 
-                    '<p style="font-weight:600;margin-bottom:0.5rem;">' + title + '</p>' +
-                    '<div class="session-id">' + message.replace(/\n/g, '<br>') + '</div>';
+            function showResult(title, message, success) {
+                const box = document.getElementById('resultBox');
+                const color = success ? '#075e54' : '#dc2626';
                 
-                document.getElementById('resultBox').innerHTML = html;
-                document.getElementById('resultBox').style.display = 'block';
+                box.innerHTML = 
+                    '<p style="font-weight:600;color:' + color + ';margin-bottom:0.5rem;">' + title + '</p>' +
+                    '<div class="session-id">🆔 ' + message + '</div>' +
+                    (success ? '<button class="copy-btn" onclick="copyId(\'' + message + '\')">📋 Copy</button>' : '');
+                
+                box.className = 'result-box show';
             }
+            
+            window.copyId = function(id) {
+                navigator.clipboard.writeText(id).then(() => {
+                    alert('Copied!');
+                });
+            };
         </script>
     </body>
     </html>
     `);
 });
 
-// API: Generate session ID
+// Generate session ID
 app.get('/generate', (req, res) => {
     const sessionId = generateSessionId();
     
@@ -231,108 +292,90 @@ app.get('/generate', (req, res) => {
         created: new Date().toISOString()
     };
     
+    console.log('Generated session:', sessionId);
     res.json({ success: true, sessionId });
 });
 
-// API: Send session ID to WhatsApp
+// Send session ID via WhatsApp
 app.post('/send', async (req, res) => {
     const { phone, sessionId } = req.body;
     
     if (!phone || !sessionId) {
-        return res.status(400).json({ error: 'Phone and sessionId required' });
+        return res.json({ success: false, error: 'Phone and sessionId required' });
+    }
+    
+    // Try to connect if not connected
+    if (!isConnected || !sock) {
+        try {
+            await connectWhatsApp();
+            // Wait a bit for connection
+            await new Promise(r => setTimeout(r, 3000));
+        } catch (err) {
+            return res.json({ success: false, error: 'Cannot connect to WhatsApp. Check server logs.' });
+        }
+    }
+    
+    if (!isConnected) {
+        return res.json({ 
+            success: false, 
+            error: 'WhatsApp not connected. View QR at /qr endpoint and scan it.' 
+        });
     }
     
     const cleanPhone = phone.replace(/[^0-9]/g, '');
     const recipientJid = cleanPhone + '@s.whatsapp.net';
     
     try {
-        if (!sock || !isConnected) {
-            return res.json({ 
-                success: false, 
-                error: 'WhatsApp not connected. Start the bot first at /start' 
-            });
-        }
-        
         await sock.sendMessage(recipientJid, { 
-            text: `🎫 *Session ID*\n\n🆔 *ID:* ${sessionId}\n📅 *Date:* ${new Date().toLocaleString()}\n\n✅ Generated by your bot`
+            text: `🎫 *Session ID*\n\n🆔 *ID:* ${sessionId}\n📅 *Date:* ${new Date().toLocaleString()}`
         });
         
-        console.log(`✅ Session ${sessionId} sent to ${cleanPhone}`);
+        console.log(`✅ Sent session ${sessionId} to ${cleanPhone}`);
         
-        res.json({ 
-            success: true, 
-            phone: cleanPhone, 
-            sessionId 
-        });
-        
+        res.json({ success: true, phone: cleanPhone, sessionId });
     } catch (error) {
-        res.json({ 
-            success: false, 
-            error: error.message 
-        });
+        console.error('Send error:', error);
+        res.json({ success: false, error: error.message });
     }
 });
 
-// API: Start WhatsApp connection
-app.get('/start', async (req, res) => {
-    if (isConnected) {
-        return res.json({ success: true, message: 'Already connected' });
-    }
-    
-    res.json({ 
-        success: true, 
-        message: 'Starting WhatsApp connection. Check terminal for pairing code.' 
-    });
-});
-
-// API: Bot status
+// Bot status
 app.get('/status', (req, res) => {
-    res.json({ 
-        connected: isConnected,
-        botJid: sock?.user?.id?.split('@')[0] || null
-    });
+    res.json({ connected: isConnected });
 });
 
-// Initialize WhatsApp
-async function initWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info');
-    
-    sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: false,
-        browser: Browsers.ubuntu('Session Bot')
-    });
+// QR code endpoint (for initial setup)
+app.get('/qr', (req, res) => {
+    res.send(`
+    <html>
+    <head>
+        <title>WhatsApp QR Setup</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body { font-family: sans-serif; text-align: center; padding: 2rem; background: #075e54; color: white; }
+            .card { background: white; color: #075e54; padding: 2rem; border-radius: 2rem; max-width: 500px; margin: 2rem auto; }
+            .btn { background: #25d366; color: white; padding: 1rem 2rem; border: none; border-radius: 3rem; font-size: 1.1rem; cursor: pointer; text-decoration: none; display: inline-block; margin-top: 1rem; }
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h1>📱 Scan QR Code</h1>
+            <p>Check your Render logs for the QR code.</p>
+            <p>Scan it with WhatsApp to connect the bot.</p>
+            <a href="/" class="btn">← Back to Home</a>
+        </div>
+    </body>
+    </html>
+    `);
+});
 
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect } = update;
-        
-        if (connection === 'open') {
-            console.log('✅ WhatsApp Connected!');
-            isConnected = true;
-            console.log('🤖 Bot Number:', sock.user.id.split('@')[0]);
-        }
-        
-        if (connection === 'close') {
-            isConnected = false;
-            const shouldReconnect = (lastDisconnect?.error instanceof Boom) 
-                && lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            
-            if (shouldReconnect) {
-                console.log('🔄 Reconnecting...');
-                initWhatsApp();
-            }
-        }
-    });
-
-    sock.ev.on('creds.update', saveCreds);
-}
-
-// Start Express server
+// Start server
 const PORT = process.env.PORT || 3230;
-app.listen(PORT, () => {
-    console.log(`🚀 Express server running on port ${PORT}`);
-    console.log(`🌐 Visit http://localhost:${PORT}`);
-    initWhatsApp();
-});
 
-app.listen(4097, ()=>{console.log('web running :200')})
+app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`🌐 Open http://localhost:${PORT}`);
+    
+    // Connect WhatsApp on startup
+    connectWhatsApp();
+});
