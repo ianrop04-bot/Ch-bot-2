@@ -4,9 +4,7 @@ const { Boom } = require('@hapi/boom');
 const crypto = require('crypto');
 const cors = require('cors')
 
-const app = express();
-
-app.use(cors())
+const app = express()
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
